@@ -1,0 +1,204 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Origin IaC'
+Parameters:
+  KeyName:
+    Description: 'Key Pair name'
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Default: mykey
+  IpForSSH:
+    Description: 'Your public IP address to allow SSH access'
+    Type: String
+    AllowedPattern: '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'
+    ConstraintDescription: 'Enter a valid IPv4 address'
+Mappings:
+  RegionMap:
+    'ap-south-1':
+      AMI: 'ami-08c9d9528020000ac'
+    'eu-west-3':
+      AMI: 'ami-093fa4c538885becf'
+    'eu-west-2':
+      AMI: 'ami-0a13d44dccf1f5cf6'
+    'eu-west-1':
+      AMI: 'ami-07d9160fa81ccffb5'
+    'ap-northeast-2':
+      AMI: 'ami-0bd7691bf6470fe9c'
+    'ap-northeast-1':
+      AMI: 'ami-0cc75a8978fbbc969'
+    'sa-east-1':
+      AMI: 'ami-018ccfb6b4745882a'
+    'ca-central-1':
+      AMI: 'ami-013d1df4bcea6ba95'
+    'ap-southeast-1':
+      AMI: 'ami-0cd31be676780afa7'
+    'ap-southeast-2':
+      AMI: 'ami-0ded330691a314693'
+    'eu-central-1':
+      AMI: 'ami-0c115dbd34c69a004'
+    'us-east-1':
+      AMI: 'ami-02354e95b39ca8dec'
+    'us-east-2':
+      AMI: 'ami-07c8bc5c1ce9598c3'
+    'us-west-1':
+      AMI: 'ami-05655c267c89566dd'
+    'us-west-2':
+      AMI: 'ami-0873b46c45c11058d'
+Resources:
+  # VPC作成
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: 'Origin VPC'
+  # デフォルトゲートウェイ
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties: {}
+  # VPCと結び付け
+  VPCGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  # サブネット作成
+  SubnetPublicOriginHost:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: '10.0.0.0/24'
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'Public Origin Host'
+  # culusterHost01
+  SubnetClusterHost01:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: '10.0.1.0/24'
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'Cluster Host01'
+  # culusterHost02
+  SubnetClusterHost02:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: '10.0.2.0/24'
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'Cluster Host02'
+  # ルートテーブル作成
+  RouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+  # ルートテーブルとサブネット結び付け
+  RouteTableAssociationPublicOriginHost:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetPublicOriginHost
+      RouteTableId: !Ref RouteTable
+  # clusterHost01 Association
+  RouteTableAssociation01:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetClusterHost01
+      RouteTableId: !Ref RouteTable
+  # clusterHost02 Association
+  RouteTableAssociation02:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetClusterHost02
+      RouteTableId: !Ref RouteTable
+  # デフォルトゲートウェイ(ルートテーブルの中身)設定
+  RoutePublicNATToInternet:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+    DependsOn: VPCGatewayAttachment
+  # セキュリティグループ
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Learn how to protect your EC2 Instance.'
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'origin'
+      # allowing inbound ICMP traffic
+      SecurityGroupIngress:
+      - IpProtocol: icmp
+        FromPort: -1
+        ToPort: -1
+        CidrIp: '0.0.0.0/0'
+      # allowing inbound SSH & http traffic
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: !Sub '${IpForSSH}/32'
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: '0.0.0.0/0'
+  # 新規IAMロール作成
+  InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+         Roles:
+         - !Ref ECRRole
+  # 既存のPolicyをIAMロールに追加(ECR Full Access)
+  ECRRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - 'ec2.amazonaws.com'
+            - 'ecs-tasks.amazonaws.com'
+          Action:
+          - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+      RoleName: ecs-full-access
+  # インスタンス
+  Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      InstanceType: 't2.micro'
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: true
+        DeleteOnTermination: true
+        SubnetId: !Ref SubnetPublicOriginHost
+        DeviceIndex: '0'
+        GroupSet:
+        - !Ref SecurityGroup
+      Tags:
+      - Key: Name
+        Value: 'origin'
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum update -y
+          amazon-linux-extras install docker
+          service docker start
+          usermod -a -G docker ec2-user
+    DependsOn: VPCGatewayAttachment
+Outputs:
+  PublicName:
+    Value: !Sub ${Instance.PublicDnsName}
+    Description: 'Public name of EC2 Instance (connect via SSH as user ec2-user)'
